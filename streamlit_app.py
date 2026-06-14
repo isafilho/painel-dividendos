@@ -1,151 +1,270 @@
 import streamlit as st
+import yfinance as yf
 import pandas as pd
-import math
-from pathlib import Path
+import plotly.graph_objects as go
 
-# Set the title and favicon that appear in the Browser's tab bar.
+# ==========================================
+# CONFIGURAÇÃO
+# ==========================================
+
+YIELD_MINIMO = 0.06  # 6%
+
 st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
+    page_title="Painel Dividendos",
+    layout="wide"
 )
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
+# ==========================================
+# FUNÇÕES
+# ==========================================
 
-@st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
-
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
+@st.cache_data(ttl=300)
+def obter_cotacao(ticker):
+    """
+    Obtém a cotação atual do Yahoo Finance.
+    Atualiza a cada 5 minutos.
     """
 
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
+    try:
+        ativo = yf.Ticker(f"{ticker}.SA")
 
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
+        info = ativo.fast_info
 
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
+        return {
+            "preco": round(info["lastPrice"], 2),
+            "abertura": round(info["open"], 2),
+            "maxima": round(info["dayHigh"], 2),
+            "minima": round(info["dayLow"], 2),
+            "volume": info.get("lastVolume", 0)
+        }
+
+    except Exception as e:
+        st.error(f"Erro ao obter cotação: {e}")
+        return None
+
+
+@st.cache_data(ttl=3600)
+def obter_historico(ticker):
+
+    dados = yf.download(
+        f"{ticker}.SA",
+        period="1y",
+        auto_adjust=True,
+        progress=False
     )
 
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
-
-    return gdp_df
-
-gdp_df = get_gdp_data()
-
-# -----------------------------------------------------------------------------
-# Draw the actual page
-
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
-
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
-
-# Add some spacing
-''
-''
-
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
-
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
-
-countries = gdp_df['Country Code'].unique()
-
-if not len(countries):
-    st.warning("Select at least one country")
-
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
-
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
-
-st.header('GDP over time', divider='gray')
-
-''
-
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
-
-''
-''
+    return dados
 
 
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
+def calcular_pt(dividendo_anual):
+    return dividendo_anual / YIELD_MINIMO
 
-st.header(f'GDP in {to_year}', divider='gray')
 
-''
+def calcular_margem_seguranca(pt_medio, cotacao):
+    return ((pt_medio / cotacao) - 1) * 100
 
-cols = st.columns(4)
 
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
+# ==========================================
+# INTERFACE
+# ==========================================
 
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
+st.title("📈 Painel de Dividendos")
 
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
-        else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
+ticker = st.text_input(
+    "Ticker",
+    value="TAEE4"
+).upper()
 
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
+col1, col2 = st.columns([1, 3])
+
+with col1:
+
+    dividendo_medio = st.number_input(
+        "Dividendo Médio Anual",
+        value=1.24,
+        step=0.01
+    )
+
+    dividendo_projetivo = st.number_input(
+        "Dividendo Projetivo",
+        value=1.22,
+        step=0.01
+    )
+
+# ==========================================
+# DADOS
+# ==========================================
+
+cotacao_info = obter_cotacao(ticker)
+
+if cotacao_info:
+
+    cotacao = cotacao_info["preco"]
+
+    pt_medio = calcular_pt(dividendo_medio)
+    pt_projetivo = calcular_pt(dividendo_projetivo)
+
+    dy_medio = (dividendo_medio / cotacao) * 100
+    dy_projetivo = (dividendo_projetivo / cotacao) * 100
+
+    margem = calcular_margem_seguranca(
+        pt_medio,
+        cotacao
+    )
+
+    # ======================================
+    # CARDS
+    # ======================================
+
+    c1, c2, c3 = st.columns(3)
+
+    c1.metric(
+        "Cotação Atual",
+        f"R$ {cotacao:.2f}"
+    )
+
+    c2.metric(
+        "PT Médio",
+        f"R$ {pt_medio:.2f}"
+    )
+
+    c3.metric(
+        "PT Projetivo",
+        f"R$ {pt_projetivo:.2f}"
+    )
+
+    c4, c5, c6 = st.columns(3)
+
+    c4.metric(
+        "DY Médio",
+        f"{dy_medio:.2f}%"
+    )
+
+    c5.metric(
+        "DY Projetivo",
+        f"{dy_projetivo:.2f}%"
+    )
+
+    c6.metric(
+        "Margem Segurança",
+        f"{margem:.2f}%"
+    )
+
+    st.divider()
+
+    # ======================================
+    # STATUS
+    # ======================================
+
+    if cotacao < pt_projetivo:
+        st.success(
+            "✅ Oportunidade à vista! "
+            "Cotação abaixo do PT Médio e PT Projetivo."
         )
+
+    elif cotacao < pt_medio:
+        st.warning(
+            "⚠️ Cotação abaixo apenas do PT Médio."
+        )
+
+    else:
+        st.error(
+            "❌ Cotação acima dos preços teto."
+        )
+
+    # ======================================
+    # GRÁFICO COMPARATIVO
+    # ======================================
+
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Bar(
+            x=[
+                "Cotação",
+                "PT Médio",
+                "PT Projetivo"
+            ],
+            y=[
+                cotacao,
+                pt_medio,
+                pt_projetivo
+            ],
+            text=[
+                f"R$ {cotacao:.2f}",
+                f"R$ {pt_medio:.2f}",
+                f"R$ {pt_projetivo:.2f}"
+            ],
+            textposition="outside"
+        )
+    )
+
+    fig.update_layout(
+        title=f"{ticker} - Comparativo",
+        height=450,
+        showlegend=False
+    )
+
+    st.plotly_chart(
+        fig,
+        use_container_width=True
+    )
+
+    # ======================================
+    # HISTÓRICO
+    # ======================================
+
+    st.subheader("Histórico de Preços")
+
+    historico = obter_historico(ticker)
+
+    fig2 = go.Figure()
+
+    fig2.add_trace(
+        go.Scatter(
+            x=historico.index,
+            y=historico["Close"],
+            mode="lines",
+            name="Cotação"
+        )
+    )
+
+    fig2.update_layout(
+        height=500,
+        xaxis_title="Data",
+        yaxis_title="Preço (R$)"
+    )
+
+    st.plotly_chart(
+        fig2,
+        use_container_width=True
+    )
+
+    # ======================================
+    # RESUMO
+    # ======================================
+
+    resumo = pd.DataFrame({
+        "Indicador": [
+            "Cotação",
+            "PT Médio",
+            "PT Projetivo",
+            "DY Médio",
+            "DY Projetivo",
+            "Margem Segurança"
+        ],
+        "Valor": [
+            f"R$ {cotacao:.2f}",
+            f"R$ {pt_medio:.2f}",
+            f"R$ {pt_projetivo:.2f}",
+            f"{dy_medio:.2f}%",
+            f"{dy_projetivo:.2f}%",
+            f"{margem:.2f}%"
+        ]
+    })
+
+    st.dataframe(
+        resumo,
+        hide_index=True,
+        use_container_width=True
+    )
